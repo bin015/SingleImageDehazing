@@ -32,6 +32,20 @@ def parse_args():
     return args
 
 
+# cfgs = {
+#     'use_physical': True,
+#     'iter_num': 40000,
+#     'train_batch_size': 16,
+#     'last_iter': 0,
+#     'lr': 5e-4,
+#     'lr_decay': 0.9,
+#     'weight_decay': 0,
+#     'momentum': 0.9,
+#     'snapshot': '',
+#     'val_freq': 5000,
+#     'crop_size': 256
+# }
+
 cfgs = {
     'use_physical': True,
     'iter_num': 40000,

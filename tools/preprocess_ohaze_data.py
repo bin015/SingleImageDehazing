@@ -13,7 +13,8 @@ if __name__ == '__main__':
     ori_haze_root = os.path.join(ori_root, 'hazy')
     ori_gt_root = os.path.join(ori_root, 'GT')
 
-    patch_root = os.path.join(ohaze_root, 'train_crop_{}'.format(crop_size))
+    # patch_root = os.path.join(ohaze_root, 'train_crop_{}'.format(crop_size))
+    patch_root = os.path.join(ohaze_root, 'test')
     patch_haze_path = os.path.join(patch_root, 'hazy')
     patch_gt_path = os.path.join(patch_root, 'gt')
 
@@ -22,8 +23,11 @@ if __name__ == '__main__':
     os.makedirs(patch_gt_path, exist_ok=True)
 
     # first 35 images for training
+    # train_list = [img_name for img_name in os.listdir(ori_haze_root)
+    #               if int(img_name.split('_')[0]) <= 35]
+    
     train_list = [img_name for img_name in os.listdir(ori_haze_root)
-                  if int(img_name.split('_')[0]) <= 35]
+                  if int(img_name.split('_')[0]) > 35]
 
     for idx, img_name in enumerate(tqdm(train_list)):
         img_f_name, img_l_name = os.path.splitext(img_name)

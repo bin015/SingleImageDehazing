@@ -6,7 +6,7 @@ import torch
 from torch import nn
 from torchvision import transforms
 
-from tools.config import TEST_SOTS_ROOT, OHAZE_ROOT
+from tools.config import OHAZE_ROOT, TEST_SOTS_ROOT
 from tools.utils import AvgMeter, check_mkdir, sliding_forward
 from model import DM2FNet, DM2FNet_woPhy
 from datasets import SotsDataset, OHazeDataset
@@ -20,16 +20,17 @@ torch.cuda.set_device(0)
 
 ckpt_path = './ckpt'
 # exp_name = 'RESIDE_ITS'
-exp_name = 'O-Haze'
+exp_name = 'DM2FNet_RESIDE_ITS'
 
 args = {
     # 'snapshot': 'iter_40000_loss_0.01230_lr_0.000000',
-    'snapshot': 'iter_19000_loss_0.04261_lr_0.000014',
+    # 'snapshot': 'iter_19000_loss_0.04261_lr_0.000014',
+    'snapshot': 'iter_40000_loss_0.01189_lr_0.000000', # [SOTS] L1: 0.011886, PSNR: 35.319774, SSIM: 0.980464
 }
 
 to_test = {
-    # 'SOTS': TEST_SOTS_ROOT,
-    'O-Haze': OHAZE_ROOT,
+    'SOTS': TEST_SOTS_ROOT,
+    # 'O-Haze': OHAZE_ROOT,
 }
 
 to_pil = transforms.ToPILImage()
@@ -84,7 +85,7 @@ def main():
                     gt = gts[i].cpu().numpy().transpose([1, 2, 0])
                     psnr = peak_signal_noise_ratio(gt, r)
                     psnrs.append(psnr)
-                    ssim = structural_similarity(gt, r, data_range=1, multichannel=True,
+                    ssim = structural_similarity(gt, r, data_range=1, multichannel=True, channel_axis=2,
                                                  gaussian_weights=True, sigma=1.5, use_sample_covariance=False)
                     ssims.append(ssim)
                     print('predicting for {} ({}/{}) [{}]: PSNR {:.4f}, SSIM {:.4f}'

@@ -1,5 +1,6 @@
 import os
 import os.path
+import re
 
 import random
 import numpy as np
@@ -19,6 +20,11 @@ def make_dataset(root):
              os.path.join(root, 'trans', img_name),
              os.path.join(root, 'gt', img_name))
             for img_name in os.listdir(os.path.join(root, 'hazy'))]
+
+
+
+def make_dataset_demo(root):
+    return [os.path.join(root, img_name) for img_name in os.listdir(root)]
 
 
 def make_dataset_its(root):
@@ -51,6 +57,27 @@ def make_dataset_ohaze(root: str, mode: str):
         assert os.path.exists(os.path.join(root, mode, 'gt', gt_name))
         img_list.append([os.path.join(root, mode, 'hazy', img_name),
                          os.path.join(root, mode, 'gt', gt_name)])
+    return img_list
+
+def hazerd_gt_filename_helper(path):
+
+    dirname, filename = os.path.split(path)
+    name, ext = os.path.splitext(filename)
+    
+    new_name = re.sub(r'(IMG_\d+)_\d+', r'\1_RGB', name)
+    
+    new_filename = new_name + ext
+    
+    return os.path.join(dirname, new_filename)
+
+def make_dataset_hazerd_test(root: str):
+    img_list = []
+    for img_name in os.listdir(os.path.join(root, 'data', 'simu')):
+        if os.path.splitext(img_name)[-1] == ".jpg":
+            gt_name = hazerd_gt_filename_helper(img_name)
+            assert os.path.exists(os.path.join(root, 'data', 'img', gt_name))
+            img_list.append([os.path.join(root, 'data', 'simu', img_name),
+                            os.path.join(root, 'data', 'img', gt_name)])
     return img_list
 
 
@@ -149,6 +176,26 @@ class ImageFolder(data.Dataset):
 
     def __len__(self):
         return len(self.imgs)
+    
+
+class DemoDataset(data.Dataset):
+
+    def __init__(self, root):
+        self.root = root
+        self.imgs = make_dataset_demo(root)
+
+    def __getitem__(self, index):
+        haze_path = self.imgs[index]
+        name = os.path.splitext(os.path.split(haze_path)[1])[0]
+
+        haze = Image.open(haze_path).convert('RGB')
+
+        haze = to_tensor(haze)
+
+        return haze, name
+
+    def __len__(self):
+        return len(self.imgs)
 
 
 class ItsDataset(data.Dataset):
@@ -226,6 +273,47 @@ class OtsDataset(data.Dataset):
 
     def __len__(self):
         return len(self.imgs)
+    
+class OtsDataset_hist(data.Dataset):
+    """
+    For RESIDE Outdoor
+    """
+
+    def __init__(self, root, flip=False, crop=None):
+        self.root = root
+        self.imgs = make_dataset_ots(root)
+        self.flip = flip
+        self.crop = crop
+        self.num_bins = 256
+
+    def __getitem__(self, index):
+        haze_path, gt_path = self.imgs[index]
+        name = os.path.splitext(os.path.split(haze_path)[1])[0]
+
+        haze = Image.open(haze_path).convert('RGB')
+        gt = Image.open(gt_path).convert('RGB')
+
+        assert haze.size == gt.size
+
+        if self.crop:
+            haze, gt = random_crop(self.crop, haze, gt)
+
+        if self.flip and random.random() < 0.5:
+            haze = haze.transpose(Image.FLIP_LEFT_RIGHT)
+            gt = gt.transpose(Image.FLIP_LEFT_RIGHT)
+
+        haze = to_tensor(haze)
+        gt = to_tensor(gt)
+
+        hist_r = torch.histc(haze[0], bins=self.num_bins, min=0, max=1)
+        hist_g = torch.histc(haze[1], bins=self.num_bins, min=0, max=1)
+        hist_b = torch.histc(haze[2], bins=self.num_bins, min=0, max=1)
+        hist = torch.cat((hist_r, hist_g, hist_b))
+
+        return haze, hist, gt, name
+
+    def __len__(self):
+        return len(self.imgs)
 
 
 class SotsDataset(data.Dataset):
@@ -252,12 +340,44 @@ class SotsDataset(data.Dataset):
 
     def __len__(self):
         return len(self.imgs)
+    
+class SotsDataset_hist(data.Dataset):
+    def __init__(self, root, mode=None):
+        self.root = root
+        self.imgs = make_dataset(root)
+        self.mode = mode
+        self.num_bins = 256
+
+    def __getitem__(self, index):
+        haze_path, trans_path, gt_path = self.imgs[index]
+        name = os.path.splitext(os.path.split(haze_path)[1])[0]
+
+        haze = Image.open(haze_path).convert('RGB')
+        haze = to_tensor(haze)
+
+        hist_r = torch.histc(haze[0], bins=self.num_bins, min=0, max=1)
+        hist_g = torch.histc(haze[1], bins=self.num_bins, min=0, max=1)
+        hist_b = torch.histc(haze[2], bins=self.num_bins, min=0, max=1)
+        hist = torch.cat((hist_r, hist_g, hist_b))
+
+        idx0 = name.split('_')[0]
+        gt = Image.open(os.path.join(self.root, 'gt', idx0 + '.png')).convert('RGB')
+        gt = to_tensor(gt)
+        if gt.shape != haze.shape:
+            # crop the indoor images
+            gt = gt[:, 10: 470, 10: 630]
+
+        return haze, hist, gt, name
+
+    def __len__(self):
+        return len(self.imgs)
 
 
 class OHazeDataset(data.Dataset):
-    def __init__(self, root, mode):
+    def __init__(self, root, mode, resize=False):
         self.root = root
         self.mode = mode
+        self.resize = resize
         self.imgs = make_dataset_ohaze(root, mode)
 
     def __getitem__(self, index):
@@ -266,6 +386,11 @@ class OHazeDataset(data.Dataset):
 
         img = Image.open(haze_path).convert('RGB')
         gt = Image.open(gt_path).convert('RGB')
+
+        transform = transforms.Compose([
+            transforms.Resize(1536),
+            transforms.ToTensor()
+        ])
 
         if 'train' in self.mode:
             # img, gt = random_crop(416, img, gt)
@@ -276,7 +401,50 @@ class OHazeDataset(data.Dataset):
             rotate_degree = np.random.choice([-90, 0, 90, 180])
             img, gt = img.rotate(rotate_degree, Image.BILINEAR), gt.rotate(rotate_degree, Image.BILINEAR)
 
-        return to_tensor(img), to_tensor(gt), name
+        if self.resize:
+            img_tensor = transform(img)
+            gt_tensor = transform(gt)
+        else:
+            img_tensor = to_tensor(img)
+            gt_tensor = to_tensor(gt)
+        
+        return img_tensor, gt_tensor, name
+
+    def __len__(self):
+        return len(self.imgs)
+
+# The Dataset is only for test
+class HazeRDDataset(data.Dataset):
+    def __init__(self, root, mode, resize=None):
+        if mode != 'test':
+            raise NotImplementedError("The HazeRD Dataset is for test only")
+        self.root = root
+        self.imgs = make_dataset_hazerd_test(root)
+        self.resize = resize
+        if self.resize:
+            self.transform = transforms.Resize(resize)
+        self.num_bins = 256
+
+    def __getitem__(self, index):
+        haze_path, gt_path = self.imgs[index]
+        name = os.path.splitext(os.path.split(haze_path)[1])[0]
+
+        haze = Image.open(haze_path).convert('RGB')
+        gt = Image.open(gt_path).convert('RGB')
+
+        if self.resize:
+            haze = self.transform(haze)
+            gt = self.transform(gt)
+
+        haze = to_tensor(haze)
+        gt = to_tensor(gt)
+
+        hist_r = torch.histc(haze[0], bins=self.num_bins, min=0, max=1)
+        hist_g = torch.histc(haze[1], bins=self.num_bins, min=0, max=1)
+        hist_b = torch.histc(haze[2], bins=self.num_bins, min=0, max=1)
+        hist = torch.cat((hist_r, hist_g, hist_b))
+
+        return haze, gt, name
 
     def __len__(self):
         return len(self.imgs)
@@ -564,3 +732,9 @@ class ImageFolder3(data.Dataset):
 
     def __len__(self):
         return len(self.imgs)
+
+# test
+# if __name__ == '__main__':
+#     dataset = HazeRDDataset("./data/HazeRD")
+#     print(dataset[0])
+# 

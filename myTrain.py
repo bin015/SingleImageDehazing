@@ -9,24 +9,26 @@ from torch import nn
 from torch import optim
 from torch.backends import cudnn
 from torch.utils.data import DataLoader
+from torch.autograd import Variable
 import torch.cuda.amp as amp
 
-from model import DM2FNet_woPhy, DM2FNet_mod_woAS_enhenced
-from tools.config import OHAZE_ROOT
-from datasets import OHazeDataset
+from myModel import AODNet, TestNet_v1, FFA
+from tools.config import TRAIN_OTS_ROOT, TEST_SOTS_ROOT
+from datasets import OtsDataset, SotsDataset, OtsDataset_hist, SotsDataset_hist
 from tools.utils import AvgMeter, check_mkdir, sliding_forward
 
+from metrics import ImageMetrics
 from skimage.metrics import peak_signal_noise_ratio, structural_similarity
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description='Train a DM2FNet')
+    parser = argparse.ArgumentParser(description='Train a AODNet')
     parser.add_argument(
         '--gpus', type=str, default='0', help='gpus to use ')
     parser.add_argument('--ckpt-path', default='./ckpt', help='checkpoint path')
     parser.add_argument(
         '--exp-name',
-        default='DM2FNet_mod_woAS_enhenced_O-Haze',
+        default='FFA_RESIDE_OTS',
         help='experiment name.')
     args = parser.parse_args()
 
@@ -34,22 +36,22 @@ def parse_args():
 
 
 cfgs = {
-    'use_physical': True,
-    'iter_num': 20000,
-    'train_batch_size': 16,
+    # 'use_physical': True,
+    'iter_num': 15000,
+    'train_batch_size': 8,
     'last_iter': 0,
-    'lr': 2e-4,
+    'lr': 0.0002,
     'lr_decay': 0.9,
-    'weight_decay': 2e-5,
+    'weight_decay': 0,
     'momentum': 0.9,
     'snapshot': '',
-    'val_freq': 4000,
-    'crop_size': 512,
+    'val_freq': 1500,
+    'crop_size': 256,
 }
 
 
 def main():
-    net = DM2FNet_mod_woAS_enhenced().cuda().train()
+    net = FFA().cuda().train()
     # net = DataParallel(net)
 
     optimizer = optim.Adam([
@@ -84,10 +86,6 @@ def train(net, optimizer):
 
     while curr_iter <= cfgs['iter_num']:
         train_loss_record = AvgMeter()
-        loss_x_e1_record = AvgMeter()
-        loss_x_jf_record = AvgMeter()
-        loss_x_j1_record, loss_x_j2_record = AvgMeter(), AvgMeter()
-        loss_x_j3_record, loss_x_j4_record = AvgMeter(), AvgMeter()
 
         for data in train_loader:
             optimizer.param_groups[0]['lr'] = 2 * cfgs['lr'] * (1 - float(curr_iter) / cfgs['iter_num']) \
@@ -104,16 +102,8 @@ def train(net, optimizer):
             optimizer.zero_grad()
 
             with amp.autocast():
-                x_jf, x_j1, x_j2, x_j3, x_j4, x_e1 = net(haze)
-
-                loss_x_jf = criterion(x_jf, gt)
-                loss_x_e1 = criterion(x_e1, gt)
-                loss_x_j1 = criterion(x_j1, gt)
-                loss_x_j2 = criterion(x_j2, gt)
-                loss_x_j3 = criterion(x_j3, gt)
-                loss_x_j4 = criterion(x_j4, gt)
-
-                loss = loss_x_jf + loss_x_j1 + loss_x_j2 + loss_x_j3 + loss_x_j4 + 2 * loss_x_e1
+                output = net(haze)
+                loss = criterion(output, gt)
 
             scaler.scale(loss).backward()
             scaler.step(optimizer)
@@ -124,20 +114,10 @@ def train(net, optimizer):
 
             train_loss_record.update(loss.item(), batch_size)
 
-            loss_x_jf_record.update(loss_x_jf.item(), batch_size)
-            loss_x_e1_record.update(loss_x_e1.item(), batch_size)
-            loss_x_j1_record.update(loss_x_j1.item(), batch_size)
-            loss_x_j2_record.update(loss_x_j2.item(), batch_size)
-            loss_x_j3_record.update(loss_x_j3.item(), batch_size)
-            loss_x_j4_record.update(loss_x_j4.item(), batch_size)
-
             curr_iter += 1
 
-            log = '[iter %d], [train loss %.5f], [loss_x_fusion %.5f], [loss_x_enhenced1 %.5f], [loss_x_j1 %.5f], ' \
-                  '[loss_x_j2 %.5f], [loss_x_j3 %.5f], [loss_x_j4 %.5f], [lr %.13f]' % \
-                  (curr_iter, train_loss_record.avg, loss_x_jf_record.avg, loss_x_e1_record.avg,
-                   loss_x_j1_record.avg, loss_x_j2_record.avg, loss_x_j3_record.avg, loss_x_j4_record.avg,
-                   optimizer.param_groups[1]['lr'])
+            log = '[iter %d], [train loss %.5f], [lr %.13f]' % \
+                  (curr_iter, train_loss_record.avg, optimizer.param_groups[1]['lr'])
             print(log)
             open(log_path, 'a').write(log + '\n')
 
@@ -161,7 +141,8 @@ def validate(net, curr_iter, optimizer):
             haze, gt, _ = data
             haze, gt = haze.cuda(), gt.cuda()
 
-            dehaze = sliding_forward(net, haze)
+            # dehaze = sliding_forward(net, haze)
+            dehaze = net(haze)
 
             loss = criterion(dehaze, gt)
             loss_record.update(loss.item(), haze.size(0))
@@ -195,12 +176,12 @@ if __name__ == '__main__':
     cudnn.benchmark = True
     torch.cuda.set_device(int(args.gpus))
 
-    train_dataset = OHazeDataset(OHAZE_ROOT, 'train_crop_512')
+    train_dataset = OtsDataset(TRAIN_OTS_ROOT, True, cfgs['crop_size'])
     train_loader = DataLoader(train_dataset, batch_size=cfgs['train_batch_size'], num_workers=4,
                               shuffle=True, drop_last=True)
 
-    val_dataset = OHazeDataset(OHAZE_ROOT, 'test')
-    val_loader = DataLoader(val_dataset, batch_size=1)
+    val_dataset = SotsDataset(TEST_SOTS_ROOT)
+    val_loader = DataLoader(val_dataset, batch_size=8)
 
     criterion = nn.L1Loss().cuda()
     log_path = os.path.join(args.ckpt_path, args.exp_name, str(datetime.datetime.now()) + '.txt')
